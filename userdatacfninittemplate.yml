@@ -1,0 +1,156 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'introducing cfn init on userdata (idempotent way of implementation in cloudformation)'
+Parameters:
+  InstanceSize:
+    Type: String
+    Default: ""
+    AllowedValues:
+      - MICRO
+      - SMALL
+      - MEDIUM
+   #Environments:
+    # Type: String
+    # Default: "TestEnv"
+    # AllowedValues:
+    #   - TestEnv
+    #   - Prod
+  DatabaseName:
+    Type: String
+    Default: wordpress
+  DatabaseUser:
+    Type: String
+    Default: wordpress
+  DatabasePassword:
+    Type: String
+    Default: wordpresspassword
+    NoEcho: true
+Mappings:
+  #Environments:
+  #  TESTENV:
+  #  PROD: Environments With conditions    
+  SizeofResourcesInTemplate:
+    MICRO:
+      "EC2":"t2.micro"
+      "DB":"DB.t2.micro"
+    SMALL:
+      "EC2":"t2.small"
+      "DB":"db.t2.small"
+    MEDIUM:
+      "EC2":"t2.medium"
+      "DB":"t2.medium"
+  ImagesByRegion:
+    us-east-1:
+      amazonami: ami-02354e95b39ca8dec
+      ubuntu: ami-0bcc094591f354be2
+    us-west-1:
+      amazonami: ami-05655c267c89566dd
+      ubuntu: ami-0dd005d3eb03f66e8
+Resources:
+  S3:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Delete
+  DB:
+    Type: "AWS::RDSDBInstance::DBInstance"
+    DeletionPolicy: Delete
+    Properties:
+      AllocatedStorage: 5
+      StorageType: gp2
+      DBInstanceClass: !FindInMap [SizeofResourcesInTemplate, !Ref InstanceSize, DB]
+      DBName: !Ref DatabaseName
+      MasterUsername: !Ref DatabaseUser
+      MasterUserPassword: !Ref DatabasePassword
+  EC2:
+    Type: "AWS::EC2::Instance"
+    DeletionPolicy: Delete
+    Properties:
+      CreationPolicy:
+        ResourceSignal:
+          count: "1"
+          Timeout: PT15M
+
+       ImageId: !FindInMap [ImagesByRegion, !Ref AWS::Region, amazonami]
+       InstanceType: !FindInMap [SizeofResourcesInTemplate, !Ref InstanceSize, EC2]
+       keyname: devops-project
+       DependsOn: DB
+       UserData:
+         "Fn::Base64"
+           !sub |
+           yum install -y aws-cfn-bootstrap #helper scripts on instance
+           /opt/aws/bin/cfn-init -v --stack ${AWS:StackName} --resource EC2 --configsets
+           wordpress --region ${AWS::Region}
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2 --region ${AWS::Region}
+       Metadata:
+         AWS::CloudFormation::Init:
+           configsets:
+             wordpress:
+               - "configure_cfn"
+               - "install_wordpress"
+               - "config_wordpress"
+             configure_cfn:
+               files:
+                 /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+                   content: !Sub |
+                   [cfn-auto-reloader-hook]
+                   triggers=post.update
+                   path=Resources.EC2.Metadata.AWS::CloudFormation::Init
+                   action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2 --configsets wordpress --region ${AWS::Region}
+                   mode: "000400"
+                   owner: root
+                   group: root
+                /etc/cfn/cfn-hup.conf:
+                  content: !Sub |
+                    [main]
+                    stack=${AWS::StackId}
+                    region=${AWS::Region}
+                    verbose=true
+                    interval=5
+                  mode: "000400"
+                  owner: root
+                  group: root
+                /var/www/html/index2.html:
+                  content: Content for AWS testing
+               services:
+                 sysvinit:
+                   cfn-hup:
+                     enabled: "true"
+                     ensureRunning: "true"
+                     files:
+                       - "/etc/cfn/cfn_hup.conf"
+                       - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+             install_wordpress:
+               packages:
+                 yum:
+                   httpd: []
+                   php: []
+                   mysql: []
+                   php-mysql: []
+               sources:
+                 /var/www/html: "http://wordpress.org/latest.tar.gz"
+               services:
+                 sysvinit:
+                   httpd:
+                     enabled: "true"
+                     ensureRunning: "true"
+             config_wordpress:
+               commands:
+                 01_clone_config:
+                   cwd: "/var/www/html/wordpress"
+                   test: "test ! -e /var/www/html/wordpress/wp-config.php"
+                   command: "cp wp-config-sample.php wp-config.php"
+                 02_inject_dbhost:
+                   cwd: "/var/www/html/wordpress"
+                   command: !Sub |
+                     sed -i 's/localhost/${DB.Endpoint.Address}/g' wp-config.php
+                 03_inject_dbname:
+                   cwd: "/var/www/html/wordpress"
+                   command: !Sub |
+                     sed -i 's/database_name_here/${DatabaseName}/g' wp-config.php
+                 04_inject_dbuser:
+                   cwd: "/var/www/html/wordpress"
+                   command: !Sub |
+                     sed -i 's/database_name_here/${DatabaseUser}/g' wp-config.php
+                 05_inject_dbpassword:
+                   cwd: "/var/www/html/wordpress"
+                   command: !sub |
+                     sed -i 's/password_here/${DatabasePassword}/g' wp-config.php

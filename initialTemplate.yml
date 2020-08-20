@@ -1,0 +1,23 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Initial Template format with Resources'
+Resources:
+  DB:
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      AllocatedStorage: 5
+      StorageType: gp2
+      DBInstanceClass: db.t2.micro
+      DBName: RDSDBInstance
+      Engine: MySQL
+      MasterUsername: UserRDSInstance
+      MasterUserPassword: PasswordRDSInstance
+  S3:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: just-onetemplate
+  EC2:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: ami-02354e95b39ca8dec
+      InstanceType: t2.micro
